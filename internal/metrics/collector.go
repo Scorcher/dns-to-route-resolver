@@ -1,0 +1,242 @@
+package metrics
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/Scorcher/dns-to-route-resolver/internal/config"
+	"github.com/Scorcher/dns-to-route-resolver/internal/log"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+// Collector collects metrics for the application
+type Collector struct {
+	routesAdded      *prometheus.CounterVec
+	routesRemoved    *prometheus.CounterVec
+	routesTotal      prometheus.Gauge
+	peersTotal       prometheus.Gauge
+	dnsLogEnabled    prometheus.Gauge
+	dnsLogProcessing prometheus.Gauge
+	dnsQueries       *prometheus.CounterVec
+	dnsQueryErrors   *prometheus.CounterVec
+	birdReloads      *prometheus.CounterVec
+	birdReloadErrors *prometheus.CounterVec
+	logger           *log.Logger
+	server           *http.Server
+	shutdownCh       chan struct{}
+	wg               sync.WaitGroup
+	cfg              *config.Config
+}
+
+// NewCollector creates a new metrics collector
+func NewCollector(cfg *config.Config) *Collector {
+	// Create metrics
+	routesAdded := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_to_route_routes_added_total",
+			Help: "Total number of routes added to the routing table",
+		},
+		[]string{},
+	)
+
+	routesRemoved := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_to_route_routes_removed_total",
+			Help: "Total number of routes removed from the routing table",
+		},
+		[]string{},
+	)
+
+	routesTotal := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dns_to_route_routes_total",
+			Help: "Current number of routes in the routing table",
+		},
+	)
+
+	peersTotal := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dns_to_route_peers_total",
+			Help: "Current number of known peers in the cluster",
+		},
+	)
+
+	dnsLogEnabled := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dns_to_route_log_enabled",
+			Help: "DNS Log file processing enabled (0 - disabled, 1 - enabled)",
+		},
+	)
+
+	dnsLogProcessing := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dns_to_route_log_processing_state",
+			Help: "DNS Log file processing state (0 - not processing, 1 - processing)",
+		},
+	)
+
+	dnsQueries := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_to_route_dns_queries_total",
+			Help: "Total number of DNS queries processed",
+		},
+		[]string{"domain"},
+	)
+
+	dnsQueryErrors := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_to_route_dns_query_errors_total",
+			Help: "Total number of DNS query errors",
+		},
+		[]string{"error"},
+	)
+
+	birdReloads := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_to_route_bird_reloads_total",
+			Help: "Total number of BIRD configuration reloads",
+		},
+		[]string{},
+	)
+
+	birdReloadErrors := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_to_route_bird_reload_errors_total",
+			Help: "Total number of BIRD configuration reload errors",
+		},
+		[]string{"error"},
+	)
+
+	// Register metrics
+	prometheus.MustRegister(
+		routesAdded,
+		routesRemoved,
+		routesTotal,
+		peersTotal,
+		dnsLogEnabled,
+		dnsLogProcessing,
+		dnsQueries,
+		dnsQueryErrors,
+		birdReloads,
+		birdReloadErrors,
+	)
+
+	return &Collector{
+		routesAdded:      routesAdded,
+		routesRemoved:    routesRemoved,
+		routesTotal:      routesTotal,
+		peersTotal:       peersTotal,
+		dnsLogEnabled:    dnsLogEnabled,
+		dnsLogProcessing: dnsLogProcessing,
+		dnsQueries:       dnsQueries,
+		dnsQueryErrors:   dnsQueryErrors,
+		birdReloads:      birdReloads,
+		birdReloadErrors: birdReloadErrors,
+		logger:           log.GetLogger(),
+		cfg:              cfg,
+		shutdownCh:       make(chan struct{}),
+	}
+}
+
+// Start starts the metrics HTTP server
+func (c *Collector) Start() error {
+	if !c.cfg.Metrics.Enabled {
+		c.logger.Info("Metrics collection is disabled")
+		return nil
+	}
+
+	// Create HTTP server
+	mux := http.NewServeMux()
+	mux.Handle(c.cfg.Metrics.Path, promhttp.Handler())
+
+	// Add health check endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+
+	c.server = &http.Server{
+		Addr:    fmt.Sprintf(":%d", c.cfg.Metrics.Port),
+		Handler: mux,
+	}
+
+	// Start HTTP server in a goroutine
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+
+		c.logger.Info(fmt.Sprintf("Starting metrics server on :%d%s", c.cfg.Metrics.Port, c.cfg.Metrics.Path))
+
+		if err := c.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			c.logger.Error(fmt.Sprintf("Failed to start metrics server: %v", err))
+		}
+	}()
+
+	return nil
+}
+
+// Stop stops the metrics HTTP server
+func (c *Collector) Stop() {
+	if c.server != nil {
+		close(c.shutdownCh)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = c.server.Shutdown(ctx)
+		c.wg.Wait()
+	}
+}
+
+// IncRoutesAdded increments the routes added counter
+func (c *Collector) IncRoutesAdded() {
+	c.routesAdded.WithLabelValues().Inc()
+}
+
+// IncRoutesRemoved increments the routes removed counter
+func (c *Collector) IncRoutesRemoved() {
+	c.routesRemoved.WithLabelValues().Inc()
+}
+
+// SetRoutesTotal sets the total number of routes
+func (c *Collector) SetRoutesTotal(count int) {
+	c.routesTotal.Set(float64(count))
+}
+
+// SetPeersTotal sets the total number of peers
+func (c *Collector) SetPeersTotal(count int) {
+	c.peersTotal.Set(float64(count))
+}
+
+// SetDnsLogEnabled sets the dns log processing enabled state
+func (c *Collector) SetDnsLogEnabled(state int) {
+	c.dnsLogEnabled.Set(float64(state))
+}
+
+// SetDnsLogProcessing sets the dns log processing state
+func (c *Collector) SetDnsLogProcessing(state int) {
+	c.dnsLogProcessing.Set(float64(state))
+}
+
+// IncDNSQueries increments the DNS queries counter
+func (c *Collector) IncDNSQueries(domain string) {
+	c.dnsQueries.WithLabelValues(domain).Inc()
+}
+
+// IncDNSErrors increments the DNS errors counter
+func (c *Collector) IncDNSErrors(err error) {
+	c.dnsQueryErrors.WithLabelValues(err.Error()).Inc()
+}
+
+// IncBIRDReloads increments the BIRD reloads counter
+func (c *Collector) IncBIRDReloads() {
+	c.birdReloads.WithLabelValues().Inc()
+}
+
+// IncBIRDReloadErrors increments the BIRD reload errors counter
+func (c *Collector) IncBIRDReloadErrors(err error) {
+	c.birdReloadErrors.WithLabelValues(err.Error()).Inc()
+}
