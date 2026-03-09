@@ -12,7 +12,6 @@ import (
 	"github.com/Scorcher/dns-to-route-resolver/internal/logprocessor"
 	"github.com/Scorcher/dns-to-route-resolver/internal/metrics"
 	"github.com/Scorcher/dns-to-route-resolver/internal/network"
-	"github.com/Scorcher/dns-to-route-resolver/internal/peer"
 )
 
 // App represents the main application
@@ -22,7 +21,6 @@ type App struct {
 	metrics        *metrics.Collector
 	logProcessor   *logprocessor.Processor
 	networkManager *network.NetworkManager
-	peerManager    *peer.PeerManager
 	shutdownCh     chan os.Signal
 }
 
@@ -31,16 +29,10 @@ func NewApp(cfg *config.Config, shutdownCh chan os.Signal) (*App, error) {
 	logger := log.GetLogger()
 
 	// Initialize metrics collector
-	metricsCollector := metrics.NewCollector(cfg)
+	metricsCollector := metrics.NewCollector(cfg, nil)
 
 	// Initialize network manager
 	netMgr := network.NewManager(cfg)
-
-	// Initialize peer manager
-	peerMgr, err := peer.NewManager(cfg, netMgr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create peer manager: %w", err)
-	}
 
 	// Initialize log processor
 	logProc := logprocessor.NewProcessor(cfg, metricsCollector)
@@ -51,7 +43,6 @@ func NewApp(cfg *config.Config, shutdownCh chan os.Signal) (*App, error) {
 		metrics:        metricsCollector,
 		logProcessor:   logProc,
 		networkManager: netMgr,
-		peerManager:    peerMgr,
 		shutdownCh:     shutdownCh,
 	}, nil
 }
@@ -68,11 +59,6 @@ func (a *App) Start() error {
 	// Start network manager
 	if err := a.networkManager.Start(); err != nil {
 		return fmt.Errorf("failed to start network manager: %w", err)
-	}
-
-	// Start peer manager
-	if err := a.peerManager.Start(); err != nil {
-		return fmt.Errorf("failed to start peer manager: %w", err)
 	}
 
 	if a.cfg.DNSLog.Enabled {
@@ -101,9 +87,6 @@ func (a *App) Stop() {
 		// Stop log processor
 		a.logProcessor.Stop()
 	}
-
-	// Stop peer manager
-	a.peerManager.Stop()
 
 	// Stop network manager
 	a.networkManager.Stop()
@@ -156,11 +139,6 @@ func (a *App) handleDNSEntry(entry logprocessor.LogEntry) {
 
 	a.metrics.IncRoutesAdded()
 	a.metrics.SetRoutesTotal(len(a.networkManager.GetKnownNetworks()))
-
-	// Announce the new route to peers
-	if err := a.peerManager.AnnounceRoute(nw); err != nil {
-		a.logger.Error("Failed to announce route: " + err.Error())
-	}
 }
 
 // WaitForShutdown waits for the application to be shut down

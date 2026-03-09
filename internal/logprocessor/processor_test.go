@@ -11,6 +11,7 @@ import (
 
 	"github.com/Scorcher/dns-to-route-resolver/internal/config"
 	"github.com/Scorcher/dns-to-route-resolver/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +22,7 @@ func TestNewProcessor(t *testing.T) {
 			MonitoredDomains: []string{"example.com", "test.org"},
 		},
 	}
-	metricsCollector := metrics.NewCollector(cfg)
+	metricsCollector := metrics.NewCollector(cfg, prometheus.NewRegistry())
 	p := NewProcessor(cfg, metricsCollector)
 
 	assert.NotNil(t, p)
@@ -81,7 +82,7 @@ func TestProcessor_ParseLogLine(t *testing.T) {
 
 	p := &Processor{
 		cfg:     cfg,
-		metrics: metrics.NewCollector(cfg),
+		metrics: metrics.NewCollector(cfg, prometheus.NewRegistry()),
 	}
 
 	for _, tt := range tests {
@@ -150,7 +151,7 @@ func TestProcessor_IsMonitoredDomain(t *testing.T) {
 			p := &Processor{
 				cfg:       cfg,
 				domains:   make(map[string]struct{}),
-				metrics:   metrics.NewCollector(cfg),
+				metrics:   metrics.NewCollector(cfg, prometheus.NewRegistry()),
 				eventChan: make(chan LogEntry, 10),
 				done:      make(chan struct{}),
 			}
@@ -169,18 +170,22 @@ func TestProcessor_ProcessLogFile(t *testing.T) {
 	// Create a temporary log file
 	tempDir, err := os.MkdirTemp("", "dns-to-route-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempDir)
 
 	logFile := filepath.Join(tempDir, "query.log")
 	f, err := os.Create(logFile)
 	require.NoError(t, err)
+
+	t.Log(logFile)
 
 	// Write test entries
 	_, err = f.WriteString("[2023-01-01 12:34:56] 192.168.1.100 example.com A\n")
 	require.NoError(t, err)
 	_, err = f.WriteString("[2023-01-01 12:35:00] 10.0.0.1 example.org A\n")
 	require.NoError(t, err)
-	f.Close()
+	_ = f.Close()
 
 	// Create config
 	cfg := &config.Config{
@@ -194,7 +199,7 @@ func TestProcessor_ProcessLogFile(t *testing.T) {
 	}
 
 	// Create processor with metrics
-	p := NewProcessor(cfg, metrics.NewCollector(cfg))
+	p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
 	// Start processing in a goroutine
 	var wg sync.WaitGroup
@@ -204,8 +209,8 @@ func TestProcessor_ProcessLogFile(t *testing.T) {
 		p.StartInternal()
 	}()
 
-	// Wait for the processor to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the processor to start and process the file
+	time.Sleep(500 * time.Millisecond)
 
 	// Should receive one event for example.com
 	select {
@@ -238,7 +243,7 @@ func TestProcessor_StartStop(t *testing.T) {
 	}
 
 	// Test with no log file (should not fail)
-	p := NewProcessor(cfg, metrics.NewCollector(cfg))
+	p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
 	err := p.Start()
 	assert.NoError(t, err)
@@ -248,7 +253,9 @@ func TestProcessor_StartStop(t *testing.T) {
 func TestProcessor_FileNotFound(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "dns-to-route-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempDir)
 
 	nonexistentFile := filepath.Join(tempDir, "nonexistent.log")
 
@@ -260,37 +267,9 @@ func TestProcessor_FileNotFound(t *testing.T) {
 	}
 
 	// Test with non-existent log file (should not fail on Start, but log a warning)
-	p := NewProcessor(cfg, metrics.NewCollector(cfg))
+	p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
 	err = p.Start()
 	assert.NoError(t, err)
 	p.Stop()
-}
-
-func TestProcessor_WithMetrics(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "dns-to-route-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
-
-	logFile := filepath.Join(tempDir, "metrics_test.log")
-	f, err := os.Create(logFile)
-	require.NoError(t, err)
-	f.Close()
-
-	// Create config
-	cfg := &config.Config{
-		DNSLog: config.DNSLogConfig{
-			Path: logFile,
-		},
-	}
-
-	p := NewProcessor(cfg, metrics.NewCollector(cfg))
-
-	// Start and immediately stop to test metrics
-	p.StartInternal()
-	p.StopInternal()
-
-	// Verify metrics were updated (exact assertions depend on your metrics implementation)
-	// This is a basic check - adjust based on your actual metrics implementation
-	// assert.Equal(t, float64(0), metrics.GetDnsLogProcessing())
 }

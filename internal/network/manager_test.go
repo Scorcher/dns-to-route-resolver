@@ -15,7 +15,9 @@ func TestNetworkManager(t *testing.T) {
 	// Create a temporary directory for test data
 	tempDir, err := os.MkdirTemp("", "dns-to-route-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempDir)
 
 	// Create a test config
 	testConfig := &config.Config{

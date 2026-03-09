@@ -19,7 +19,6 @@ type Collector struct {
 	routesAdded      *prometheus.CounterVec
 	routesRemoved    *prometheus.CounterVec
 	routesTotal      prometheus.Gauge
-	peersTotal       prometheus.Gauge
 	dnsLogEnabled    prometheus.Gauge
 	dnsLogProcessing prometheus.Gauge
 	dnsQueries       *prometheus.CounterVec
@@ -33,8 +32,12 @@ type Collector struct {
 	cfg              *config.Config
 }
 
-// NewCollector creates a new metrics collector
-func NewCollector(cfg *config.Config) *Collector {
+// NewCollector creates a new metrics collector with optional registry for testing isolation. If registry is nil, uses the default prometheus registry.
+func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector {
+	if registry == nil {
+		registry = prometheus.DefaultRegisterer
+	}
+
 	// Create metrics
 	routesAdded := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -56,13 +59,6 @@ func NewCollector(cfg *config.Config) *Collector {
 		prometheus.GaugeOpts{
 			Name: "dns_to_route_routes_total",
 			Help: "Current number of routes in the routing table",
-		},
-	)
-
-	peersTotal := prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "dns_to_route_peers_total",
-			Help: "Current number of known peers in the cluster",
 		},
 	)
 
@@ -113,11 +109,10 @@ func NewCollector(cfg *config.Config) *Collector {
 	)
 
 	// Register metrics
-	prometheus.MustRegister(
+	registry.MustRegister(
 		routesAdded,
 		routesRemoved,
 		routesTotal,
-		peersTotal,
 		dnsLogEnabled,
 		dnsLogProcessing,
 		dnsQueries,
@@ -130,7 +125,6 @@ func NewCollector(cfg *config.Config) *Collector {
 		routesAdded:      routesAdded,
 		routesRemoved:    routesRemoved,
 		routesTotal:      routesTotal,
-		peersTotal:       peersTotal,
 		dnsLogEnabled:    dnsLogEnabled,
 		dnsLogProcessing: dnsLogProcessing,
 		dnsQueries:       dnsQueries,
@@ -204,11 +198,6 @@ func (c *Collector) IncRoutesRemoved() {
 // SetRoutesTotal sets the total number of routes
 func (c *Collector) SetRoutesTotal(count int) {
 	c.routesTotal.Set(float64(count))
-}
-
-// SetPeersTotal sets the total number of peers
-func (c *Collector) SetPeersTotal(count int) {
-	c.peersTotal.Set(float64(count))
 }
 
 // SetDnsLogEnabled sets the dns log processing enabled state

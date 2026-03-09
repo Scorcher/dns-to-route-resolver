@@ -35,15 +35,12 @@ type DNSLogConfig struct {
 
 type NetworkConfig struct {
 	MonitoredDomains []string `yaml:"monitored_domains"`
-	Interface        string   `yaml:"interface"`
-	PeerPort         int      `yaml:"peer_port"`
-	Peers            []string `yaml:"peers"`
 }
 
 type BirdConfig struct {
-	ConfigPath    string   `yaml:"config_path"`
-	ReloadCommand []string `yaml:"reload_command"`
-	RouteTemplate string   `yaml:"route_template"`
+	ConfigPathTemplate string   `yaml:"config_path_template"`
+	ReloadCommand      []string `yaml:"reload_command"`
+	RouteTemplate      string   `yaml:"route_template"`
 }
 
 type MetricsConfig struct {
@@ -58,10 +55,9 @@ type PersistenceConfig struct {
 }
 
 type Settings struct {
-	NetworkMask           int `yaml:"network_mask"`
-	PeerDiscoveryInterval int `yaml:"peer_discovery_interval"`
-	MaxRetries            int `yaml:"max_retries"`
-	RetryBackoff          int `yaml:"retry_backoff"`
+	NetworkMask  int `yaml:"network_mask"`
+	MaxRetries   int `yaml:"max_retries"`
+	RetryBackoff int `yaml:"retry_backoff"`
 }
 
 // DefaultConfig returns a default configuration
@@ -79,14 +75,11 @@ func DefaultConfig() *Config {
 		},
 		Network: NetworkConfig{
 			MonitoredDomains: []string{},
-			Interface:        "eth0",
-			PeerPort:         9090,
-			Peers:            []string{},
 		},
 		Bird: BirdConfig{
-			ConfigPath:    "/etc/bird/bird.conf",
-			ReloadCommand: []string{"birdc", "configure"},
-			RouteTemplate: "route %s via 127.0.0.1;\n",
+			ConfigPathTemplate: "/etc/bird/lst/dns-to-route-resolver.lst",
+			ReloadCommand:      []string{"birdc", "configure"},
+			RouteTemplate:      "route %s via 127.0.0.1;\n",
 		},
 		Metrics: MetricsConfig{
 			Enabled: true,
@@ -98,10 +91,9 @@ func DefaultConfig() *Config {
 			SaveInterval: 300,
 		},
 		Settings: Settings{
-			NetworkMask:           24,
-			PeerDiscoveryInterval: 60,
-			MaxRetries:            3,
-			RetryBackoff:          5,
+			NetworkMask:  24,
+			MaxRetries:   3,
+			RetryBackoff: 5,
 		},
 	}
 }

@@ -133,6 +133,13 @@ func (p *Processor) processLogs() {
 				continue
 			}
 		}
+
+		// If not following, processing is complete after one successful run
+		if !p.cfg.DNSLog.Follow {
+			p.logger.Info("File processing completed (non-following mode)")
+			return
+		}
+
 		retryCount = 0 // Reset retry counter on successful processing
 	}
 }
@@ -143,7 +150,9 @@ func (p *Processor) processLogsWithRetry() bool {
 		p.logger.Errorf("Failed to open log file: %v", err)
 		return false
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
 	defer p.metrics.SetDnsLogProcessing(0)
 
 	p.metrics.SetDnsLogProcessing(1)
@@ -160,12 +169,17 @@ func (p *Processor) processLogsWithRetry() bool {
 	// Create a buffered reader with a timeout
 	reader := bufio.NewReader(file)
 
-	// Channel to signal when new data is available
+	// If not following, read the entire file and process all lines at once
+	if !p.cfg.DNSLog.Follow {
+		return p.processEntireFile(reader)
+	}
+
+	// If following, read lines continuously with timeout mechanism
 	lines := make(chan string, 100)
 	errCh := make(chan error, 1)
 
-	// Goroutine to read lines from file with timeout
-	go p.readFile(file, reader, lines, errCh)
+	// Goroutine to read lines from file with timeout simulation
+	go p.readFileWithTimeout(reader, lines, errCh)
 
 	for {
 		select {
@@ -183,8 +197,8 @@ func (p *Processor) processLogsWithRetry() bool {
 				continue
 			}
 
-			// Check if this is a domain we're interested in
-			if p.isMonitoredDomain(entry.Domain) {
+			// Check if this is a domain we're interested in and IP is v4
+			if entry.QueryType == "A" && p.isMonitoredDomain(entry.Domain) {
 				select {
 				case p.eventChan <- *entry:
 					// Event sent successfully
@@ -196,52 +210,68 @@ func (p *Processor) processLogsWithRetry() bool {
 	}
 }
 
-// processLogs processes the log file
-func (p *Processor) readFile(file *os.File, reader *bufio.Reader, lines chan string, errCh chan error) {
+// processEntireFile reads the entire file content and processes all lines at once
+func (p *Processor) processEntireFile(reader *bufio.Reader) bool {
+	for {
+		select {
+		case <-p.done:
+			return true
+		default:
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err != io.EOF {
+					p.logger.Errorf("Error reading log file: %v", err)
+					return false
+				}
+				// EOF reached, processing complete
+				return true
+			}
+
+			// Trim newline characters
+			line = strings.TrimRight(line, "\n\r")
+
+			entry, err := p.parseLogLine(line)
+			if err != nil {
+				// Skip invalid log entries
+				continue
+			}
+
+			// Check if this is a domain we're interested in and IP is v4
+			if entry.QueryType == "A" && p.isMonitoredDomain(entry.Domain) {
+				select {
+				case p.eventChan <- *entry:
+					// Event sent successfully
+				case <-p.done:
+					return true
+				}
+			}
+		}
+	}
+}
+
+// readFileWithTimeout reads lines from file with timeout simulation for following mode
+func (p *Processor) readFileWithTimeout(reader *bufio.Reader, lines chan string, errCh chan error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-p.done:
 			return
-		default:
-			// Set a read deadline
-			if err := file.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
-				errCh <- err
-				return
-			}
-
+		case <-ticker.C:
 			// Try to read a line
-			line, isPrefix, err := reader.ReadLine()
+			line, err := reader.ReadString('\n')
 			if err != nil {
-				if os.IsTimeout(err) {
-					// Timeout occurred, check if we should exit
-					select {
-					case <-p.done:
-						return
-					default:
-						continue
-					}
-				}
 				if err != io.EOF {
 					errCh <- err
 				}
 				return
 			}
 
-			// Handle partial lines
-			var fullLine []byte
-			fullLine = append(fullLine, line...)
-			for isPrefix {
-				var part []byte
-				part, isPrefix, err = reader.ReadLine()
-				if err != nil {
-					errCh <- err
-					return
-				}
-				fullLine = append(fullLine, part...)
-			}
-
+			// Trim newline and send line
+			line = strings.TrimRight(line, "\n\r")
 			select {
-			case lines <- string(fullLine):
+			case lines <- line:
 			case <-p.done:
 				return
 			}
@@ -282,7 +312,9 @@ func (p *Processor) watchLogFileWithRetry() bool {
 		p.logger.Errorf("Failed to create file watcher: %v", err)
 		return false
 	}
-	defer watcher.Close()
+	defer func(watcher *fsnotify.Watcher) {
+		_ = watcher.Close()
+	}(watcher)
 
 	// Watch the directory containing the log file
 	logDir := filepath.Dir(p.cfg.DNSLog.Path)
@@ -346,11 +378,6 @@ func (p *Processor) parseLogLine(line string) (*LogEntry, error) {
 	queryType := "A" // Default to A record if not specified
 	if len(parts) > 4 {
 		queryType = parts[4]
-	}
-
-	// We're only interested in A records
-	if queryType != "A" {
-		return nil, fmt.Errorf("unsupported query type: %s", queryType)
 	}
 
 	return &LogEntry{
