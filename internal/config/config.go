@@ -34,7 +34,12 @@ type DNSLogConfig struct {
 }
 
 type NetworkConfig struct {
-	MonitoredDomains []string `yaml:"monitored_domains"`
+	MonitoredDomains []DomainGroup `yaml:"monitored_domains"`
+}
+
+type DomainGroup struct {
+	Name    string   `yaml:"name"`
+	Domains []string `yaml:"domains"`
 }
 
 type BirdConfig struct {
@@ -74,12 +79,12 @@ func DefaultConfig() *Config {
 			Follow:  true,
 		},
 		Network: NetworkConfig{
-			MonitoredDomains: []string{},
+			MonitoredDomains: []DomainGroup{},
 		},
 		Bird: BirdConfig{
 			ConfigPathTemplate: "/etc/bird/lst/dns-to-route-resolver.lst",
 			ReloadCommand:      []string{"birdc", "configure"},
-			RouteTemplate:      "route %s via 127.0.0.1;\n",
+			RouteTemplate:      "route %s blackhole;\n",
 		},
 		Metrics: MetricsConfig{
 			Enabled: true,

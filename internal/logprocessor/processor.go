@@ -22,6 +22,7 @@ type LogEntry struct {
 	ClientIP  net.IP
 	Domain    string
 	QueryType string
+	Group     string
 }
 
 const (
@@ -33,7 +34,7 @@ const (
 type Processor struct {
 	cfg       *config.Config
 	logger    *log.Logger
-	domains   map[string]struct{}
+	domains   map[string]string // domain -> group
 	eventChan chan LogEntry
 	done      chan struct{}
 	wg        sync.WaitGroup
@@ -42,10 +43,12 @@ type Processor struct {
 
 // NewProcessor creates a new log processor
 func NewProcessor(cfg *config.Config, metrics *metrics.Collector) *Processor {
-	// Create a set of monitored domains for faster lookups
-	domains := make(map[string]struct{})
-	for _, domain := range cfg.Network.MonitoredDomains {
-		domains[strings.ToLower(domain)] = struct{}{}
+	// Create a map of monitored domains to groups for faster lookups
+	domains := make(map[string]string)
+	for _, group := range cfg.Network.MonitoredDomains {
+		for _, domain := range group.Domains {
+			domains[strings.ToLower(domain)] = group.Name
+		}
 	}
 
 	return &Processor{
@@ -197,8 +200,8 @@ func (p *Processor) processLogsWithRetry() bool {
 				continue
 			}
 
-			// Check if this is a domain we're interested in and IP is v4
-			if entry.QueryType == "A" && p.isMonitoredDomain(entry.Domain) {
+			// Check if this is a domain we're interested in
+			if entry.Group != "" {
 				select {
 				case p.eventChan <- *entry:
 					// Event sent successfully
@@ -236,8 +239,8 @@ func (p *Processor) processEntireFile(reader *bufio.Reader) bool {
 				continue
 			}
 
-			// Check if this is a domain we're interested in and IP is v4
-			if entry.QueryType == "A" && p.isMonitoredDomain(entry.Domain) {
+			// Check if this is a domain we're interested in
+			if entry.Group != "" {
 				select {
 				case p.eventChan <- *entry:
 					// Event sent successfully
@@ -380,26 +383,30 @@ func (p *Processor) parseLogLine(line string) (*LogEntry, error) {
 		queryType = parts[4]
 	}
 
+	// Get group for domain
+	group := p.getDomainGroup(domain)
+
 	return &LogEntry{
 		ClientIP:  clientIP,
 		Domain:    domain,
 		QueryType: queryType,
+		Group:     group,
 	}, nil
 }
 
-// isMonitoredDomain checks if a domain is in the list of monitored domains
-func (p *Processor) isMonitoredDomain(domain string) bool {
+// getDomainGroup returns the group name for a monitored domain, or empty string if not monitored
+func (p *Processor) getDomainGroup(domain string) string {
 	// Check exact match first
-	if _, ok := p.domains[strings.ToLower(domain)]; ok {
-		return true
+	if group, ok := p.domains[strings.ToLower(domain)]; ok {
+		return group
 	}
 
 	// Check subdomains
-	for d := range p.domains {
+	for d, group := range p.domains {
 		if strings.HasSuffix("."+domain, "."+d) {
-			return true
+			return group
 		}
 	}
 
-	return false
+	return ""
 }

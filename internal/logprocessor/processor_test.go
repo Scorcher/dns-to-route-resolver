@@ -4,7 +4,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,7 +18,9 @@ import (
 func TestNewProcessor(t *testing.T) {
 	cfg := &config.Config{
 		Network: config.NetworkConfig{
-			MonitoredDomains: []string{"example.com", "test.org"},
+			MonitoredDomains: []config.DomainGroup{
+				{Name: "test", Domains: []string{"example.com", "test.org"}},
+			},
 		},
 	}
 	metricsCollector := metrics.NewCollector(cfg, prometheus.NewRegistry())
@@ -47,6 +48,7 @@ func TestProcessor_ParseLogLine(t *testing.T) {
 				Domain:    "example.com",
 				ClientIP:  net.ParseIP("192.168.1.100"),
 				QueryType: "A",
+				Group:     "test",
 			},
 			wantErr: false,
 		},
@@ -57,6 +59,7 @@ func TestProcessor_ParseLogLine(t *testing.T) {
 				Domain:    "example.com",
 				ClientIP:  net.ParseIP("2001:db8::1"),
 				QueryType: "AAAA",
+				Group:     "test",
 			},
 			wantErr: false,
 		},
@@ -76,14 +79,13 @@ func TestProcessor_ParseLogLine(t *testing.T) {
 
 	cfg := &config.Config{
 		Network: config.NetworkConfig{
-			MonitoredDomains: []string{"example.com"},
+			MonitoredDomains: []config.DomainGroup{
+				{Name: "test", Domains: []string{"example.com"}},
+			},
 		},
 	}
 
-	p := &Processor{
-		cfg:     cfg,
-		metrics: metrics.NewCollector(cfg, prometheus.NewRegistry()),
-	}
+	p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,46 +99,47 @@ func TestProcessor_ParseLogLine(t *testing.T) {
 			assert.Equal(t, tt.want.Domain, got.Domain)
 			assert.Equal(t, tt.want.ClientIP, got.ClientIP)
 			assert.Equal(t, tt.want.QueryType, got.QueryType)
+			assert.Equal(t, tt.want.Group, got.Group)
 		})
 	}
 }
 
-func TestProcessor_IsMonitoredDomain(t *testing.T) {
+func TestProcessor_GetDomainGroup(t *testing.T) {
 	tests := []struct {
 		name     string
 		domain   string
-		monitor  []string
-		expected bool
+		monitor  []config.DomainGroup
+		expected string
 	}{
 		{
 			name:     "exact match",
 			domain:   "example.com",
-			monitor:  []string{"example.com"},
-			expected: true,
+			monitor:  []config.DomainGroup{{Name: "test", Domains: []string{"example.com"}}},
+			expected: "test",
 		},
 		{
 			name:     "subdomain match",
 			domain:   "sub.example.com",
-			monitor:  []string{"example.com"},
-			expected: true,
+			monitor:  []config.DomainGroup{{Name: "test", Domains: []string{"example.com"}}},
+			expected: "test",
 		},
 		{
 			name:     "no match",
 			domain:   "other.com",
-			monitor:  []string{"example.com"},
-			expected: false,
+			monitor:  []config.DomainGroup{{Name: "test", Domains: []string{"example.com"}}},
+			expected: "",
 		},
 		{
 			name:     "empty monitor list",
 			domain:   "example.com",
-			monitor:  []string{},
-			expected: false,
+			monitor:  []config.DomainGroup{},
+			expected: "",
 		},
 		{
 			name:     "case insensitive match",
 			domain:   "Example.COM",
-			monitor:  []string{"example.com"},
-			expected: true,
+			monitor:  []config.DomainGroup{{Name: "test", Domains: []string{"example.com"}}},
+			expected: "test",
 		},
 	}
 
@@ -148,20 +151,9 @@ func TestProcessor_IsMonitoredDomain(t *testing.T) {
 				},
 			}
 
-			p := &Processor{
-				cfg:       cfg,
-				domains:   make(map[string]struct{}),
-				metrics:   metrics.NewCollector(cfg, prometheus.NewRegistry()),
-				eventChan: make(chan LogEntry, 10),
-				done:      make(chan struct{}),
-			}
+			p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
-			// Initialize domains map
-			for _, d := range tt.monitor {
-				p.domains[strings.ToLower(d)] = struct{}{}
-			}
-
-			assert.Equal(t, tt.expected, p.isMonitoredDomain(tt.domain))
+			assert.Equal(t, tt.expected, p.getDomainGroup(tt.domain))
 		})
 	}
 }
@@ -194,7 +186,9 @@ func TestProcessor_ProcessLogFile(t *testing.T) {
 			Follow: false,
 		},
 		Network: config.NetworkConfig{
-			MonitoredDomains: []string{"example.com"},
+			MonitoredDomains: []config.DomainGroup{
+				{Name: "test", Domains: []string{"example.com"}},
+			},
 		},
 	}
 
@@ -217,6 +211,7 @@ func TestProcessor_ProcessLogFile(t *testing.T) {
 	case entry := <-p.Events():
 		assert.Equal(t, "example.com", entry.Domain)
 		assert.Equal(t, "192.168.1.100", entry.ClientIP.String())
+		assert.Equal(t, "test", entry.Group)
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for log event")
 	}

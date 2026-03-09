@@ -131,14 +131,14 @@ func (a *App) handleDNSEntry(entry logprocessor.LogEntry) {
 	}
 
 	// Add the network to our routing table
-	if err := a.networkManager.AddNetwork(nw.IP); err != nil {
+	if err := a.networkManager.AddNetwork(nw.IP, entry.Group); err != nil {
 		a.logger.Error("Failed to add network: " + err.Error())
 		a.metrics.IncDNSErrors(err)
 		return
 	}
 
 	a.metrics.IncRoutesAdded()
-	a.metrics.SetRoutesTotal(len(a.networkManager.GetKnownNetworks()))
+	a.metrics.SetRoutesTotal(a.networkManager.GetCount())
 }
 
 // WaitForShutdown waits for the application to be shut down
