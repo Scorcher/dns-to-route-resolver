@@ -144,7 +144,7 @@ func (a *App) handleDNSEntry(entry logprocessor.LogEntry) {
 
 	// Save routes for this group
 	if err := a.networkManager.SaveGroupRoutes(entry.Group, routes); err != nil {
-		a.logger.Errorf("failed to save routes for group %s: %w", entry.Group, err)
+		a.logger.Errorf("failed to save routes for group %s: %v", entry.Group, err)
 	}
 }
 
