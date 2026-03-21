@@ -45,9 +45,10 @@ func (m *NetworkManager) Start() error {
 			m.logger.Warn("Failed to load known networks: " + err.Error())
 		} else {
 			for group := range m.knownNets {
-				_ = m.saveGroupRoutes(group)
+				if err := m.SaveGroupRoutes(group, m.GetGroupRoutes(group)); err != nil {
+					return err
+				}
 			}
-			_ = m.bird.ReloadConfig()
 		}
 	}
 
@@ -70,15 +71,15 @@ func (m *NetworkManager) Stop() {
 // AddNetwork adds a network to the routing table for a specific group
 func (m *NetworkManager) AddNetwork(ip net.IP, group string) error {
 	// Convert IP to /24 network
-	nw := ipToNetwork(ip, m.cfg.Settings.NetworkMask)
-	nwStr := nw.String()
+	network := ipToNetwork(ip, m.cfg.Settings.NetworkMask)
+	networkStr := network.String()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Check if we already know about this network in this group
 	if groupMap, exists := m.knownNets[group]; exists {
-		if _, netExists := groupMap[nwStr]; netExists {
+		if _, netExists := groupMap[networkStr]; netExists {
 			return nil // Already exists
 		}
 	}
@@ -87,17 +88,10 @@ func (m *NetworkManager) AddNetwork(ip net.IP, group string) error {
 	if m.knownNets[group] == nil {
 		m.knownNets[group] = make(map[string]struct{})
 	}
-	m.knownNets[group][nwStr] = struct{}{}
+	m.knownNets[group][networkStr] = struct{}{}
 	m.countKnownNets++
 
-	// Save routes for this group
-	if err := m.saveGroupRoutes(group); err != nil {
-		return fmt.Errorf("failed to save routes for group %s: %w", group, err)
-	}
-
-	m.logger.Info("Added network: " + nwStr + " for group: " + group)
-
-	_ = m.bird.ReloadConfig()
+	m.logger.Info("Added network: " + networkStr + " for group: " + group)
 
 	return nil
 }
@@ -129,32 +123,38 @@ func (m *NetworkManager) RemoveNetwork(nw *net.IPNet) error {
 		delete(m.knownNets, foundGroup)
 	}
 
-	// Save routes for this group
-	if err := m.saveGroupRoutes(foundGroup); err != nil {
-		return fmt.Errorf("failed to save routes for group %s: %w", foundGroup, err)
-	}
-
 	m.logger.Info("Removed network: " + nwStr + " from group: " + foundGroup)
-
-	_ = m.bird.ReloadConfig()
 
 	return nil
 }
 
-// saveGroupRoutes saves all routes for a group to BIRD
-func (m *NetworkManager) saveGroupRoutes(group string) error {
+// SaveGroupRoutes saves all routes for a group to BIRD
+func (m *NetworkManager) SaveGroupRoutes(group string, routes []string) error {
+	if err := m.bird.SaveGroupRoutes(group, routes); err != nil {
+		return err
+	}
+
+	if err := m.bird.ReloadConfig(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// GetGroupRoutes returns all routes for a group
+func (m *NetworkManager) GetGroupRoutes(group string) []string {
 	m.mu.RLock()
 	groupMap, exists := m.knownNets[group]
 	m.mu.RUnlock()
 
 	routes := make([]string, 0, len(groupMap))
 	if exists {
-		for nwStr := range groupMap {
-			routes = append(routes, nwStr)
+		for networkStr := range groupMap {
+			routes = append(routes, networkStr)
 		}
 	}
 
-	return m.bird.SaveGroupRoutes(group, routes)
+	return routes
 }
 
 // GetCount returns count of known networks

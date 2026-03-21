@@ -35,7 +35,6 @@ build-all: clean
 	GOOS=linux GOARCH=arm64 $(GOBUILD) -o dist/$(BINARY_NAME)-linux-arm64 $(LDFLAGS) ./cmd/$(BINARY_NAME)
 	GOOS=darwin GOARCH=amd64 $(GOBUILD) -o dist/$(BINARY_NAME)-darwin-amd64 $(LDFLAGS) ./cmd/$(BINARY_NAME)
 	GOOS=darwin GOARCH=arm64 $(GOBUILD) -o dist/$(BINARY_NAME)-darwin-arm64 $(LDFLAGS) ./cmd/$(BINARY_NAME)
-	GOOS=windows GOARCH=amd64 $(GOBUILD) -o dist/$(BINARY_NAME)-windows-amd64.exe $(LDFLAGS) ./cmd/$(BINARY_NAME)
 	@echo "Build complete. Binaries are in the dist/ directory."
 
 # Install dependencies
