@@ -7,7 +7,7 @@ before:
     - go mod tidy
 
 builds:
-  - id: ippon-q1-exporter
+  - id: dns-to-route-resolver
     binary: dns-to-route-resolver
     main: ./cmd/dns-to-route-resolver
     env:
@@ -15,7 +15,6 @@ builds:
     goos:
       - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
