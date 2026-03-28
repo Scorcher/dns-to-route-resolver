@@ -22,9 +22,7 @@ type Config struct {
 }
 
 type LogConfig struct {
-	Level  string `yaml:"level"`
-	Format string `yaml:"format"`
-	File   string `yaml:"file"`
+	Level string `yaml:"level"`
 }
 
 type DNSLogConfig struct {
@@ -69,9 +67,7 @@ type Settings struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Log: LogConfig{
-			Level:  "info",
-			Format: "json",
-			File:   "",
+			Level: "info",
 		},
 		DNSLog: DNSLogConfig{
 			Enabled: true,

@@ -3,15 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
-	"net"
-	"os"
-	"time"
-
 	"github.com/Scorcher/dns-to-route-resolver/internal/config"
 	"github.com/Scorcher/dns-to-route-resolver/internal/log"
 	"github.com/Scorcher/dns-to-route-resolver/internal/logprocessor"
 	"github.com/Scorcher/dns-to-route-resolver/internal/metrics"
 	"github.com/Scorcher/dns-to-route-resolver/internal/network"
+	"net"
+	"sync"
 )
 
 // App represents the main application
@@ -21,18 +19,19 @@ type App struct {
 	metrics        *metrics.Collector
 	logProcessor   *logprocessor.Processor
 	networkManager *network.NetworkManager
-	shutdownCh     chan os.Signal
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // NewApp creates a new application instance
-func NewApp(cfg *config.Config, shutdownCh chan os.Signal) (*App, error) {
+func NewApp(cfg *config.Config) (*App, error) {
 	logger := log.GetLogger()
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector(cfg, nil)
 
 	// Initialize network manager
-	netMgr := network.NewManager(cfg)
+	netMgr := network.NewManager(cfg, metricsCollector)
 
 	// Initialize log processor
 	logProc := logprocessor.NewProcessor(cfg, metricsCollector)
@@ -43,61 +42,81 @@ func NewApp(cfg *config.Config, shutdownCh chan os.Signal) (*App, error) {
 		metrics:        metricsCollector,
 		logProcessor:   logProc,
 		networkManager: netMgr,
-		shutdownCh:     shutdownCh,
 	}, nil
 }
 
-// Start starts the application
-func (a *App) Start() error {
+// Run start the application
+func (a *App) Run(ctx context.Context) error {
+	a.ctx, a.cancel = context.WithCancel(ctx)
 	a.logger.Info("Starting DNS to Route Resolver")
 
-	// Start metrics server
-	if err := a.metrics.Start(); err != nil {
-		return fmt.Errorf("failed to start metrics: %w", err)
-	}
+	errChan := make(chan error, 1)
 
-	// Start network manager
-	if err := a.networkManager.Start(); err != nil {
-		return fmt.Errorf("failed to start network manager: %w", err)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Run metrics server
+		if err := a.metrics.Run(a.ctx); err != nil {
+			a.logger.Errorf("failed to start metrics server: %v", err)
+			errChan <- err
+		}
+	}()
+
+	// Init network manager
+	if err := a.networkManager.Init(); err != nil {
+		a.logger.Errorf("failed to start network manager: %v", err)
+		errChan <- err
 	}
+	a.metrics.SetRoutesTotal(a.networkManager.GetCount())
 
 	if a.cfg.DNSLog.Enabled {
 		a.metrics.SetDnsLogEnabled(1)
 
-		// Start log processor
-		if err := a.logProcessor.Start(); err != nil {
-			return fmt.Errorf("failed to start log processor: %w", err)
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Run log processor
+			if err := a.logProcessor.Run(a.ctx); err != nil {
+				a.logger.Errorf("failed to start log processor: %v", err)
+				errChan <- err
+			}
+		}()
 
-		// Start processing logs
-		go a.processLogs()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Run processing logs
+			a.receiveLogs()
+		}()
 	} else {
 		a.metrics.SetDnsLogEnabled(0)
 	}
 
 	a.logger.Info("DNS to Route Resolver started successfully")
+
+	select {
+	case err := <-errChan:
+		a.cancel()
+		wg.Wait()
+		return err
+	case <-ctx.Done():
+	}
+
+	a.logger.Info("DNS to Route Resolver stopping")
+
+	// cancel application context
+	a.cancel()
+
+	a.networkManager.Flush()
+
+	wg.Wait()
+
 	return nil
 }
 
-// Stop stops the application
-func (a *App) Stop() {
-	a.logger.Info("Shutting down DNS to Route Resolver...")
-
-	if a.cfg.DNSLog.Enabled {
-		// Stop log processor
-		a.logProcessor.Stop()
-	}
-
-	// Stop network manager
-	a.networkManager.Stop()
-
-	// Stop metrics server
-	a.metrics.Stop()
-	a.logger.Info("DNS to Route Resolver stopped")
-}
-
-// processLogs processes DNS log entries
-func (a *App) processLogs() {
+// receiveLogs processes DNS log entries
+func (a *App) receiveLogs() {
 	for {
 		select {
 		case entry, ok := <-a.logProcessor.Events():
@@ -106,9 +125,10 @@ func (a *App) processLogs() {
 				return
 			}
 
+			a.logger.Debug("receiveLogs: got event")
 			a.handleDNSEntry(entry)
 
-		case <-a.shutdownCh:
+		case <-a.ctx.Done():
 			return
 		}
 	}
@@ -117,11 +137,13 @@ func (a *App) processLogs() {
 // handleDNSEntry handles a single DNS log entry
 func (a *App) handleDNSEntry(entry logprocessor.LogEntry) {
 	a.metrics.IncDNSQueries(entry.Domain)
+	a.logger.Debugf("handleDNSEntry: entry - %s", entry.ClientIP.String())
 
 	// Skip localhost and non-A records
 	if entry.ClientIP.IsLoopback() || entry.QueryType != "A" {
 		return
 	}
+	a.logger.Debug("handleDNSEntry: skip loopback and non IPv4")
 
 	// Add the network to our routing table
 	_, nw, err := net.ParseCIDR(fmt.Sprintf("%s/%d", entry.ClientIP, a.cfg.Settings.NetworkMask))
@@ -129,36 +151,25 @@ func (a *App) handleDNSEntry(entry logprocessor.LogEntry) {
 		a.logger.Error("Failed to parse network: " + err.Error())
 		return
 	}
+	a.logger.Debugf("handleDNSEntry: successfully parsed network: %s", nw.String())
 
 	// Add the network to our routing table
-	if err := a.networkManager.AddNetwork(nw.IP, entry.Group); err != nil {
-		a.logger.Error("Failed to add network: " + err.Error())
-		a.metrics.IncDNSErrors(err)
+	added := a.networkManager.AddNetwork(nw.IP, entry.Group)
+	if !added {
+		a.logger.Debugf("handleDNSEntry: network %s already exists in group %s", nw.String(), entry.Group)
 		return
 	}
+	a.logger.Debugf("handleDNSEntry: network %s added to group %s", nw.String(), entry.Group)
 
 	a.metrics.IncRoutesAdded()
 	a.metrics.SetRoutesTotal(a.networkManager.GetCount())
 
 	routes := a.networkManager.GetGroupRoutes(entry.Group)
+	a.logger.Debug("handleDNSEntry: got group routes")
 
 	// Save routes for this group
 	if err := a.networkManager.SaveGroupRoutes(entry.Group, routes); err != nil {
 		a.logger.Errorf("failed to save routes for group %s: %v", entry.Group, err)
 	}
-}
-
-// WaitForShutdown waits for the application to be shut down
-func (a *App) WaitForShutdown(timeout time.Duration) {
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// Wait for shutdown or timeout
-	select {
-	case <-a.shutdownCh:
-		a.logger.Info("Shutdown complete")
-	case <-ctx.Done():
-		a.logger.Warn("Shutdown timed out, forcing exit")
-	}
+	a.logger.Debug("handleDNSEntry: group routes saved")
 }

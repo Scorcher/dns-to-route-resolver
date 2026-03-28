@@ -41,5 +41,5 @@ Thumbs.db
 .env.local
 
 ./_tasks/
-!./data/placeholder.txt
-./data/*
+data/
+!data/placeholder.txt

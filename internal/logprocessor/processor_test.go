@@ -1,6 +1,8 @@
 package logprocessor
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -28,7 +30,6 @@ func TestNewProcessor(t *testing.T) {
 
 	assert.NotNil(t, p)
 	assert.NotNil(t, p.eventChan)
-	assert.NotNil(t, p.done)
 	assert.Len(t, p.domains, 2)
 	assert.Contains(t, p.domains, "example.com")
 	assert.Contains(t, p.domains, "test.org")
@@ -195,12 +196,14 @@ func TestProcessor_ProcessLogFile(t *testing.T) {
 	// Create processor with metrics
 	p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	// Start processing in a goroutine
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		p.StartInternal()
+		_ = p.Run(ctx)
 	}()
 
 	// Wait for the processor to start and process the file
@@ -225,24 +228,61 @@ func TestProcessor_ProcessLogFile(t *testing.T) {
 	}
 
 	// Stop the processor
-	p.StopInternal()
+	cancel()
 	wg.Wait()
 }
 
 func TestProcessor_StartStop(t *testing.T) {
+
+	// Create a temporary log file
+	tempDir, err := os.MkdirTemp("", "dns-to-route-test-*")
+	require.NoError(t, err)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempDir)
+
+	logFile := filepath.Join(tempDir, "query.log")
+	f, err := os.Create(logFile)
+	require.NoError(t, err)
+
+	t.Log(logFile)
+
+	_ = f.Close()
+
 	// Create config
 	cfg := &config.Config{
 		DNSLog: config.DNSLogConfig{
-			Path: "",
+			Path: logFile,
 		},
 	}
 
 	// Test with no log file (should not fail)
 	p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
-	err := p.Start()
-	assert.NoError(t, err)
-	p.Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := p.Run(ctx)
+		assert.NoError(t, err)
+	}()
+	cancel()
+
+	// Wait for the goroutine to complete with a timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Goroutine completed successfully
+	case <-time.After(2 * time.Second):
+		t.Error("goroutine did not complete within 2 seconds")
+	}
 }
 
 func TestProcessor_FileNotFound(t *testing.T) {
@@ -252,7 +292,8 @@ func TestProcessor_FileNotFound(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(tempDir)
 
-	nonexistentFile := filepath.Join(tempDir, "nonexistent.log")
+	filename := "nonexistent.log"
+	nonexistentFile := filepath.Join(tempDir, filename)
 
 	// Create config
 	cfg := &config.Config{
@@ -264,7 +305,14 @@ func TestProcessor_FileNotFound(t *testing.T) {
 	// Test with non-existent log file (should not fail on Start, but log a warning)
 	p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
-	err = p.Start()
-	assert.NoError(t, err)
-	p.Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := p.Run(ctx)
+		assert.Error(t, err)
+		assert.Equal(t, fmt.Sprintf("log file does not exist: %s", filename), err.Error())
+	}()
 }

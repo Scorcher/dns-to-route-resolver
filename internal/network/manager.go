@@ -3,6 +3,7 @@ package network
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/Scorcher/dns-to-route-resolver/internal/metrics"
 	"net"
 	"os"
 	"sync"
@@ -17,23 +18,26 @@ type NetworkManager struct {
 	logger         *log.Logger
 	bird           *BirdManager
 	knownNets      map[string]map[string]struct{}
+	metrics        *metrics.Collector
 	countKnownNets int
-	mu             sync.RWMutex
+	stateMutex     sync.RWMutex
+	memoryMutex    sync.RWMutex
 }
 
 // NewManager creates a new NetworkManager instance
-func NewManager(cfg *config.Config) *NetworkManager {
+func NewManager(cfg *config.Config, metrics *metrics.Collector) *NetworkManager {
 	return &NetworkManager{
 		cfg:            cfg,
 		logger:         log.GetLogger(),
 		knownNets:      make(map[string]map[string]struct{}),
+		metrics:        metrics,
 		countKnownNets: 0,
 		bird:           NewBirdManager(cfg),
 	}
 }
 
-// Start initializes the network manager
-func (m *NetworkManager) Start() error {
+// Init initializes the network manager
+func (m *NetworkManager) Init() error {
 	// Initialize BIRD manager
 	if err := m.bird.Init(); err != nil {
 		return fmt.Errorf("failed to initialize BIRD manager: %w", err)
@@ -55,10 +59,8 @@ func (m *NetworkManager) Start() error {
 	return nil
 }
 
-// Stop cleans up resources
-func (m *NetworkManager) Stop() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// Flush cleans up resources
+func (m *NetworkManager) Flush() {
 
 	// Clean up BIRD configuration if needed
 	if m.cfg.Persistence.StateFile != "" {
@@ -69,18 +71,18 @@ func (m *NetworkManager) Stop() {
 }
 
 // AddNetwork adds a network to the routing table for a specific group
-func (m *NetworkManager) AddNetwork(ip net.IP, group string) error {
+func (m *NetworkManager) AddNetwork(ip net.IP, group string) bool {
 	// Convert IP to /24 network
 	network := ipToNetwork(ip, m.cfg.Settings.NetworkMask)
 	networkStr := network.String()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.memoryMutex.Lock()
+	defer m.memoryMutex.Unlock()
 
 	// Check if we already know about this network in this group
 	if groupMap, exists := m.knownNets[group]; exists {
 		if _, netExists := groupMap[networkStr]; netExists {
-			return nil // Already exists
+			return false // Already exists
 		}
 	}
 
@@ -93,15 +95,15 @@ func (m *NetworkManager) AddNetwork(ip net.IP, group string) error {
 
 	m.logger.Info("Added network: " + networkStr + " for group: " + group)
 
-	return nil
+	return true
 }
 
 // RemoveNetwork removes a network from the routing table
-func (m *NetworkManager) RemoveNetwork(nw *net.IPNet) error {
+func (m *NetworkManager) RemoveNetwork(nw *net.IPNet) bool {
 	nwStr := nw.String()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.memoryMutex.Lock()
+	defer m.memoryMutex.Unlock()
 
 	// Find which group contains this network
 	var foundGroup string
@@ -113,7 +115,7 @@ func (m *NetworkManager) RemoveNetwork(nw *net.IPNet) error {
 	}
 
 	if foundGroup == "" {
-		return nil // Not found, nothing to do
+		return false // Not found, nothing to do
 	}
 
 	// Remove from known networks
@@ -125,7 +127,7 @@ func (m *NetworkManager) RemoveNetwork(nw *net.IPNet) error {
 
 	m.logger.Info("Removed network: " + nwStr + " from group: " + foundGroup)
 
-	return nil
+	return true
 }
 
 // SaveGroupRoutes saves all routes for a group to BIRD
@@ -133,19 +135,23 @@ func (m *NetworkManager) SaveGroupRoutes(group string, routes []string) error {
 	if err := m.bird.SaveGroupRoutes(group, routes); err != nil {
 		return err
 	}
+	m.logger.Debug("SaveGroupRoutes: bird saved")
 
 	if err := m.bird.ReloadConfig(); err != nil {
+		m.metrics.IncBIRDReloadErrors("reload_error")
 		return err
 	}
+	m.metrics.IncBIRDReloads()
+	m.logger.Debug("SaveGroupRoutes: bird reloaded")
 
 	return nil
 }
 
 // GetGroupRoutes returns all routes for a group
 func (m *NetworkManager) GetGroupRoutes(group string) []string {
-	m.mu.RLock()
+	m.memoryMutex.RLock()
 	groupMap, exists := m.knownNets[group]
-	m.mu.RUnlock()
+	m.memoryMutex.RUnlock()
 
 	routes := make([]string, 0, len(groupMap))
 	if exists {
@@ -164,6 +170,9 @@ func (m *NetworkManager) GetCount() int {
 
 // loadKnownNetworks loads known networks from disk
 func (m *NetworkManager) loadKnownNetworks() error {
+	m.stateMutex.RLock()
+	defer m.stateMutex.RUnlock()
+	m.logger.Debugf("loadKnownNetworks: reading state file \"%s\"", m.cfg.Persistence.StateFile)
 	data, err := os.ReadFile(m.cfg.Persistence.StateFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -176,9 +185,10 @@ func (m *NetworkManager) loadKnownNetworks() error {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return fmt.Errorf("failed to parse state file: %w", err)
 	}
+	m.logger.Debugf("loadKnownNetworks: unmarshaled file \"%s\"", m.cfg.Persistence.StateFile)
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.memoryMutex.Lock()
+	defer m.memoryMutex.Unlock()
 
 	countKnownNets := 0
 	for group, networks := range state {
@@ -191,6 +201,7 @@ func (m *NetworkManager) loadKnownNetworks() error {
 		m.knownNets[group] = groupMap
 		m.countKnownNets += countKnownNets
 	}
+	m.logger.Debugf("loadKnownNetworks: readed networks count=%d", m.countKnownNets)
 
 	m.logger.Info("Loaded known networks from state file")
 	return nil
@@ -198,7 +209,10 @@ func (m *NetworkManager) loadKnownNetworks() error {
 
 // saveKnownNetworks saves known networks to disk
 func (m *NetworkManager) saveKnownNetworks() error {
-	m.mu.RLock()
+	m.stateMutex.Lock()
+	defer m.stateMutex.Unlock()
+
+	m.memoryMutex.RLock()
 	state := make(map[string][]string)
 	for group, groupMap := range m.knownNets {
 		networks := make([]string, 0, len(groupMap))
@@ -207,7 +221,7 @@ func (m *NetworkManager) saveKnownNetworks() error {
 		}
 		state[group] = networks
 	}
-	m.mu.RUnlock()
+	m.memoryMutex.RUnlock()
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

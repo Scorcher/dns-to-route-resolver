@@ -1,19 +1,19 @@
 package main
 
 import (
+	"context"
 	"flag"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
 	"github.com/Scorcher/dns-to-route-resolver/internal/app"
 	"github.com/Scorcher/dns-to-route-resolver/internal/config"
 	"github.com/Scorcher/dns-to-route-resolver/internal/log"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 )
 
 var (
-	configPath = flag.String("config", "/etc/dns-to-route-resolver/config.yaml", "path to config file")
+	configPath = flag.String("config", "configs/config.yaml", "path to config file")
 	version    = "dev"
 )
 
@@ -36,32 +36,36 @@ func main() {
 	logger.Info("Starting DNS to Route Resolver (version: " + version + ")")
 	logger.Info("Using configuration from: " + *configPath)
 
-	// Handle shutdown signals
-	shutdownCh := make(chan os.Signal, 1)
-	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM)
+	// Handle shutdown signals with context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signalCh
+		logger.Debug("Received shutdown signal, cancelling context")
+		cancel()
+	}()
 
 	// Create application
-	application, err := app.NewApp(cfg, shutdownCh)
+	application, err := app.NewApp(cfg)
 	if err != nil {
 		logger.Fatal("Failed to create application: " + err.Error())
 	}
 
-	// Start the application in a goroutine
-	if err := application.Start(); err != nil {
-		logger.Error("Application error: " + err.Error())
-		shutdownCh <- syscall.SIGTERM
-	}
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Run the application
+		if err := application.Run(ctx); err != nil {
+			logger.Error("Application error: " + err.Error())
+			cancel()
+		}
+	}()
 
 	// Wait for shutdown signal
-	sig := <-shutdownCh
-	close(shutdownCh)
-	logger.Info("Received signal: " + sig.String())
-	logger.Info("Shutting down...")
-
-	// Stop the application
-	application.Stop()
-
-	// Wait for graceful shutdown
-	application.WaitForShutdown(30 * time.Second)
+	<-ctx.Done()
+	wg.Wait()
 	logger.Info("Shutdown complete")
 }
