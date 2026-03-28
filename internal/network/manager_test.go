@@ -1,6 +1,8 @@
 package network
 
 import (
+	"github.com/Scorcher/dns-to-route-resolver/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,7 +16,8 @@ import (
 
 func TestNewManager(t *testing.T) {
 	cfg := &config.Config{}
-	mgr := NewManager(cfg)
+	metricsCollector := metrics.NewCollector(cfg, prometheus.NewRegistry())
+	mgr := NewManager(cfg, metricsCollector)
 
 	assert.NotNil(t, mgr)
 	assert.NotNil(t, mgr.cfg)
@@ -29,7 +32,7 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 		name          string
 		ip            net.IP
 		group         string
-		expectError   bool
+		expectStatus  bool
 		expectCount   int
 		expectInGroup bool
 	}{
@@ -37,7 +40,7 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 			name:          "add new network",
 			ip:            net.ParseIP("192.168.1.100"),
 			group:         "group1",
-			expectError:   false,
+			expectStatus:  true,
 			expectCount:   1,
 			expectInGroup: true,
 		},
@@ -45,7 +48,7 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 			name:          "add duplicate network",
 			ip:            net.ParseIP("192.168.1.100"),
 			group:         "group1",
-			expectError:   false,
+			expectStatus:  false,
 			expectCount:   1,
 			expectInGroup: true,
 		},
@@ -53,7 +56,7 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 			name:          "add network to different group",
 			ip:            net.ParseIP("10.0.0.1"),
 			group:         "group2",
-			expectError:   false,
+			expectStatus:  true,
 			expectCount:   2,
 			expectInGroup: true,
 		},
@@ -62,22 +65,25 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 	cfg := &config.Config{
 		Settings: config.Settings{NetworkMask: 24},
 	}
-	mgr := NewManager(cfg)
+	metricsCollector := metrics.NewCollector(cfg, prometheus.NewRegistry())
+	mgr := NewManager(cfg, metricsCollector)
+
+	var status bool
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			err := mgr.AddNetwork(tt.ip, tt.group)
-			if tt.expectError {
-				assert.Error(t, err)
+			status = mgr.AddNetwork(tt.ip, tt.group)
+			if !tt.expectStatus {
+				assert.False(t, status)
 			} else {
-				assert.NoError(t, err)
+				assert.True(t, status)
 				assert.Equal(t, tt.expectCount, mgr.GetCount())
 
 				if tt.expectInGroup {
-					mgr.mu.RLock()
+					mgr.stateMutex.RLock()
 					groupMap, exists := mgr.knownNets[tt.group]
-					mgr.mu.RUnlock()
+					mgr.stateMutex.RUnlock()
 
 					assert.True(t, exists)
 					expectedNetwork := ipToNetwork(tt.ip, 24).String()
@@ -93,37 +99,41 @@ func TestNetworkManager_RemoveNetwork(t *testing.T) {
 	cfg := &config.Config{
 		Settings: config.Settings{NetworkMask: 24},
 	}
-	mgr := NewManager(cfg)
+	metricsCollector := metrics.NewCollector(cfg, prometheus.NewRegistry())
+	mgr := NewManager(cfg, metricsCollector)
+
+	var status bool
 
 	// Add a network first
 	ip := net.ParseIP("192.168.1.100")
 	group := "test-group"
-	err := mgr.AddNetwork(ip, group)
-	require.NoError(t, err)
+	status = mgr.AddNetwork(ip, group)
+	assert.True(t, status)
 	assert.Equal(t, 1, mgr.GetCount())
 
 	// Remove the network
 	network := ipToNetwork(ip, 24)
-	err = mgr.RemoveNetwork(network)
-	assert.NoError(t, err)
+	status = mgr.RemoveNetwork(network)
+	assert.True(t, status)
 	assert.Equal(t, 0, mgr.GetCount())
 
 	// Verify it's removed
-	mgr.mu.RLock()
+	mgr.stateMutex.RLock()
 	_, exists := mgr.knownNets[group]
-	mgr.mu.RUnlock()
+	mgr.stateMutex.RUnlock()
 	assert.False(t, exists)
 
 	// Try to remove non-existing network (should not error)
-	err = mgr.RemoveNetwork(network)
-	assert.NoError(t, err)
+	status = mgr.RemoveNetwork(network)
+	assert.False(t, status)
 }
 
 func TestNetworkManager_GetCount(t *testing.T) {
 	cfg := &config.Config{
 		Settings: config.Settings{NetworkMask: 24},
 	}
-	mgr := NewManager(cfg)
+	metricsCollector := metrics.NewCollector(cfg, prometheus.NewRegistry())
+	mgr := NewManager(cfg, metricsCollector)
 
 	assert.Equal(t, 0, mgr.GetCount())
 
@@ -139,7 +149,8 @@ func TestNetworkManager_ConcurrentAccess(t *testing.T) {
 	cfg := &config.Config{
 		Settings: config.Settings{NetworkMask: 24},
 	}
-	mgr := NewManager(cfg)
+	metricsCollector := metrics.NewCollector(cfg, prometheus.NewRegistry())
+	mgr := NewManager(cfg, metricsCollector)
 
 	var wg sync.WaitGroup
 	numGoroutines := 10
@@ -179,8 +190,9 @@ func TestNetworkManager_Persistence(t *testing.T) {
 		Persistence: config.PersistenceConfig{StateFile: stateFile},
 	}
 
+	metricsCollector := metrics.NewCollector(cfg, prometheus.NewRegistry())
 	// Create manager and add some networks
-	mgr1 := NewManager(cfg)
+	mgr1 := NewManager(cfg, metricsCollector)
 
 	_ = mgr1.AddNetwork(net.ParseIP("192.168.1.1"), "group1")
 	_ = mgr1.AddNetwork(net.ParseIP("192.168.2.1"), "group1")
@@ -191,7 +203,7 @@ func TestNetworkManager_Persistence(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create new manager and load state
-	mgr2 := NewManager(cfg)
+	mgr2 := NewManager(cfg, metricsCollector)
 
 	err = mgr2.loadKnownNetworks()
 	require.NoError(t, err)
@@ -199,10 +211,10 @@ func TestNetworkManager_Persistence(t *testing.T) {
 	assert.Equal(t, mgr1.GetCount(), mgr2.GetCount())
 
 	// Verify loaded networks
-	mgr2.mu.RLock()
+	mgr2.stateMutex.RLock()
 	group1Map, exists1 := mgr2.knownNets["group1"]
 	group2Map, exists2 := mgr2.knownNets["group2"]
-	mgr2.mu.RUnlock()
+	mgr2.stateMutex.RUnlock()
 
 	assert.True(t, exists1)
 	assert.True(t, exists2)

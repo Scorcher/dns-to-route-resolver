@@ -2,12 +2,12 @@
 
 # Logging configuration
 log:
-  level: "info"  # debug, info, warn, error
+  level: "debug"  # debug, info, warn, error
 
 # DNS log file to monitor
 dns_log:
   enabled: true  # read log file
-  path: "/var/log/dnscrypt-proxy/query.log"
+  path: "data/query.log"
   follow: true  # Follow log file if rotated
 
 # Network configuration
@@ -24,20 +24,20 @@ network:
 
 # BIRD configuration
 bird:
-  config_path_template: "/etc/bird/lst/dns-to-route-resolver-%s.lst"
-  reload_command: ["birdc", "configure"]
+  config_path_template: "data/dns-to-route-resolver-%s.lst"
+  reload_command: ["true"]
   route_template: "route %s blackhole;\n"
 
 # Metrics configuration
 metrics:
   enabled: true
-  port: 9091
+  port: 19091
   path: "/metrics"
 
 # Persistence
 persistence:
   # File to store known networks
-  state_file: "/var/lib/dns-to-route-resolver/state.json"
+  state_file: "data/state.json"
   # How often to save state (in seconds)
   save_interval: 300
 

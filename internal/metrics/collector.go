@@ -27,8 +27,6 @@ type Collector struct {
 	birdReloadErrors *prometheus.CounterVec
 	logger           *log.Logger
 	server           *http.Server
-	shutdownCh       chan struct{}
-	wg               sync.WaitGroup
 	cfg              *config.Config
 }
 
@@ -61,6 +59,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 			Help: "Current number of routes in the routing table",
 		},
 	)
+	routesTotal.Set(0)
 
 	dnsLogEnabled := prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -68,6 +67,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 			Help: "DNS Log file processing enabled (0 - disabled, 1 - enabled)",
 		},
 	)
+	dnsLogEnabled.Set(0)
 
 	dnsLogProcessing := prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -75,6 +75,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 			Help: "DNS Log file processing state (0 - not processing, 1 - processing)",
 		},
 	)
+	dnsLogProcessing.Set(0)
 
 	dnsQueries := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -99,6 +100,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 		},
 		[]string{},
 	)
+	birdReloads.WithLabelValues().Add(0)
 
 	birdReloadErrors := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -133,12 +135,11 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 		birdReloadErrors: birdReloadErrors,
 		logger:           log.GetLogger(),
 		cfg:              cfg,
-		shutdownCh:       make(chan struct{}),
 	}
 }
 
-// Start starts the metrics HTTP server
-func (c *Collector) Start() error {
+// Run starts the metrics HTTP server
+func (c *Collector) Run(ctx context.Context) error {
 	if !c.cfg.Metrics.Enabled {
 		c.logger.Info("Metrics collection is disabled")
 		return nil
@@ -159,30 +160,36 @@ func (c *Collector) Start() error {
 		Handler: mux,
 	}
 
+	errChan := make(chan error, 1)
+
 	// Start HTTP server in a goroutine
-	c.wg.Add(1)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
 	go func() {
-		defer c.wg.Done()
+		defer wg.Done()
 
 		c.logger.Info(fmt.Sprintf("Starting metrics server on :%d%s", c.cfg.Metrics.Port, c.cfg.Metrics.Path))
 
 		if err := c.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			c.logger.Error(fmt.Sprintf("Failed to start metrics server: %v", err))
+			errChan <- err
 		}
 	}()
 
-	return nil
-}
-
-// Stop stops the metrics HTTP server
-func (c *Collector) Stop() {
-	if c.server != nil {
-		close(c.shutdownCh)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = c.server.Shutdown(ctx)
-		c.wg.Wait()
+	select {
+	case <-errChan:
+	case <-ctx.Done():
 	}
+
+	if c.server != nil {
+		ctxTimeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = c.server.Shutdown(ctxTimeout)
+	}
+
+	wg.Wait()
+
+	return nil
 }
 
 // IncRoutesAdded increments the routes added counter
@@ -216,8 +223,8 @@ func (c *Collector) IncDNSQueries(domain string) {
 }
 
 // IncDNSErrors increments the DNS errors counter
-func (c *Collector) IncDNSErrors(err error) {
-	c.dnsQueryErrors.WithLabelValues(err.Error()).Inc()
+func (c *Collector) IncDNSErrors(err string) {
+	c.dnsQueryErrors.WithLabelValues(err).Inc()
 }
 
 // IncBIRDReloads increments the BIRD reloads counter
@@ -226,6 +233,6 @@ func (c *Collector) IncBIRDReloads() {
 }
 
 // IncBIRDReloadErrors increments the BIRD reload errors counter
-func (c *Collector) IncBIRDReloadErrors(err error) {
-	c.birdReloadErrors.WithLabelValues(err.Error()).Inc()
+func (c *Collector) IncBIRDReloadErrors(err string) {
+	c.birdReloadErrors.WithLabelValues(err).Inc()
 }
