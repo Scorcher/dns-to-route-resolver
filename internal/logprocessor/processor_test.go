@@ -313,6 +313,6 @@ func TestProcessor_FileNotFound(t *testing.T) {
 		defer wg.Done()
 		err := p.Run(ctx)
 		assert.Error(t, err)
-		assert.Equal(t, fmt.Sprintf("log file does not exist: %s", filename), err.Error())
+		assert.Equal(t, fmt.Sprintf("log file does not exist: %s", nonexistentFile), err.Error())
 	}()
 }
