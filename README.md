@@ -73,30 +73,22 @@ clustering:
 
 ### Configuration Options
 
-#### BIRD Configuration
-- `config_path_template`: Template for BIRD config file paths (use `%s` for group name)
-- `route_template`: Template for individual route entries
-- `reload_command`: Command to reload BIRD configuration
-
-#### Settings
-- `network_mask`: CIDR mask for network aggregation (1-32)
-- `log_file_path`: Path to DNS log file to monitor
-- `flush_interval`: How often to flush buffered routes
-- `resolved_timeout`: How long to keep resolved entries
-
-#### Logging
-- `level`: Log level (debug, info, warn, error)
-
-#### Metrics
-- `enabled`: Enable/disable Prometheus metrics
-- `port`: Port for metrics server
-- `path`: HTTP path for metrics endpoint
-
-#### Clustering
-- `enabled`: Enable/disable clustering
-- `port`: Port for cluster communication
-- `secret`: Shared secret for cluster authentication
-- `advertise`: Address to advertise to other cluster members
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `log.level` | Logging level (debug, info, warn, error) | `info` |
+| `dns_log.enabled` | Enable reading DNS log file | `true` |
+| `dns_log.path` | Path to DNS log file | `"/var/log/dnscrypt-proxy/query.log"` |
+| `dns_log.follow` | Follow log file if rotated | `true` |
+| `network.monitored_domains` | List of domain groups to monitor (each with name and list of domains) | `[]` |
+| `bird.config_path_template` | Template for BIRD config file paths (use %s for group name) | `"/etc/bird/lst/dns-to-route-resolver.lst"` |
+| `bird.reload_command` | Command to reload BIRD configuration | `["birdc", "configure"]` |
+| `bird.route_template` | Template for individual route entries | `"route %s blackhole;\n"` |
+| `metrics.enabled` | Enable/disable Prometheus metrics | `true` |
+| `metrics.port` | Port for metrics server | `9091` |
+| `metrics.path` | HTTP path for metrics endpoint | `"/metrics"` |
+| `persistence.state_file` | File to store known networks | `"/var/lib/dns-to-route-resolver/state.json"` |
+| `persistence.save_interval` | How often to save state (in seconds) | `300` |
+| `settings.network_mask` | Network mask for routes (24 for /24) | `24` |
 
 ## Usage
 
@@ -135,11 +127,17 @@ docker run -v $(pwd)/config.yaml:/config.yaml dns-to-route-resolver /config.yaml
 
 ## Monitoring
 
-The service exposes Prometheus metrics at `http://localhost:9090/metrics` when enabled:
+The service exposes Prometheus metrics at `http://localhost:9091/metrics` when enabled (see configuration file):
 
-- `dns_to_route_resolver_routes_total`: Total number of routes
-- `dns_to_route_resolver_routes_added`: Routes added counter
-- `dns_to_route_resolver_dns_queries_processed`: DNS queries processed
+* dns_to_route_routes_added_total (counter): Total number of routes added to the routing table
+* dns_to_route_routes_removed_total (counter): Total number of routes removed from the routing table
+* dns_to_route_routes_total (gauge): Current number of routes in the routing table
+* dns_to_route_log_enabled (gauge): DNS Log file processing enabled (0 - disabled, 1 - enabled)
+* dns_to_route_log_processing_state (gauge): DNS Log file processing state (0 - not processing, 1 - processing)
+* dns_to_route_dns_queries_total (counter): Total number of DNS queries processed
+* dns_to_route_dns_query_errors_total (counter): Total number of DNS query errors
+* dns_to_route_bird_reloads_total (counter): Total number of BIRD configuration reloads
+* dns_to_route_bird_reload_errors_total (counter): Total number of BIRD configuration reload errors
 
 ## Architecture
 
