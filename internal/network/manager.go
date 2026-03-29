@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Scorcher/dns-to-route-resolver/internal/metrics"
-	"net"
 	"os"
 	"sync"
 
@@ -104,17 +103,13 @@ func (m *NetworkManager) CleanupNetworks() {
 }
 
 // AddNetwork adds a network to the routing table for a specific group
-func (m *NetworkManager) AddNetwork(ip net.IP, group string) bool {
-	// Convert IP to /24 network
-	network := ipToNetwork(ip, m.cfg.Settings.NetworkMask)
-	networkStr := network.String()
-
+func (m *NetworkManager) AddNetwork(network string, group string) bool {
 	m.memoryMutex.Lock()
 	defer m.memoryMutex.Unlock()
 
 	// Check if we already know about this network in this group
 	if groupMap, exists := m.knownNets[group]; exists {
-		if _, netExists := groupMap[networkStr]; netExists {
+		if _, netExists := groupMap[network]; netExists {
 			return false // Already exists
 		}
 	}
@@ -123,25 +118,23 @@ func (m *NetworkManager) AddNetwork(ip net.IP, group string) bool {
 	if m.knownNets[group] == nil {
 		m.knownNets[group] = make(map[string]struct{})
 	}
-	m.knownNets[group][networkStr] = struct{}{}
+	m.knownNets[group][network] = struct{}{}
 	m.countKnownNets++
 
-	m.logger.Info("Added network: " + networkStr + " for group: " + group)
+	m.logger.Info("Added network: " + network + " for group: " + group)
 
 	return true
 }
 
 // RemoveNetwork removes a network from the routing table
-func (m *NetworkManager) RemoveNetwork(nw *net.IPNet) bool {
-	nwStr := nw.String()
-
+func (m *NetworkManager) RemoveNetwork(network string) bool {
 	m.memoryMutex.Lock()
 	defer m.memoryMutex.Unlock()
 
 	// Find which group contains this network
 	var foundGroup string
 	for group, groupMap := range m.knownNets {
-		if _, exists := groupMap[nwStr]; exists {
+		if _, exists := groupMap[network]; exists {
 			foundGroup = group
 			break
 		}
@@ -152,13 +145,13 @@ func (m *NetworkManager) RemoveNetwork(nw *net.IPNet) bool {
 	}
 
 	// Remove from known networks
-	delete(m.knownNets[foundGroup], nwStr)
+	delete(m.knownNets[foundGroup], network)
 	m.countKnownNets--
 	if len(m.knownNets[foundGroup]) == 0 {
 		delete(m.knownNets, foundGroup)
 	}
 
-	m.logger.Info("Removed network: " + nwStr + " from group: " + foundGroup)
+	m.logger.Info("Removed network: " + network + " from group: " + foundGroup)
 
 	return true
 }
@@ -267,13 +260,4 @@ func (m *NetworkManager) saveKnownNetworks() error {
 
 	m.logger.Info("Saved known networks to state file")
 	return nil
-}
-
-// ipToNetwork converts an IP to a network with the specified mask length
-func ipToNetwork(ip net.IP, maskLen int) *net.IPNet {
-	mask := net.CIDRMask(maskLen, 32) // IPv4 only for now
-	return &net.IPNet{
-		IP:   ip.Mask(mask),
-		Mask: mask,
-	}
 }
