@@ -63,6 +63,10 @@ type Settings struct {
 	RetryBackoff int `yaml:"retry_backoff"`
 }
 
+const (
+	CommandNameCleanup = "cleanup"
+)
+
 // DefaultConfig returns a default configuration
 func DefaultConfig() *Config {
 	return &Config{

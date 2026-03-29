@@ -139,7 +139,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 }
 
 // Run starts the metrics HTTP server
-func (c *Collector) Run(ctx context.Context) error {
+func (c *Collector) Run(ctx context.Context, cmdChan chan string) error {
 	if !c.cfg.Metrics.Enabled {
 		c.logger.Info("Metrics collection is disabled")
 		return nil
@@ -153,6 +153,13 @@ func (c *Collector) Run(ctx context.Context) error {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
+	})
+
+	// Add health check endpoint
+	mux.HandleFunc("/cleanup", func(w http.ResponseWriter, r *http.Request) {
+		cmdChan <- config.CommandNameCleanup
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("SCHEDULED"))
 	})
 
 	c.server = &http.Server{

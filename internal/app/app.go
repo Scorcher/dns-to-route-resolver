@@ -51,13 +51,14 @@ func (a *App) Run(ctx context.Context) error {
 	a.logger.Info("Starting DNS to Route Resolver")
 
 	errChan := make(chan error, 1)
+	cmdChan := make(chan string, 1)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		// Run metrics server
-		if err := a.metrics.Run(a.ctx); err != nil {
+		if err := a.metrics.Run(a.ctx, cmdChan); err != nil {
 			a.logger.Errorf("failed to start metrics server: %v", err)
 			errChan <- err
 		}
@@ -93,6 +94,12 @@ func (a *App) Run(ctx context.Context) error {
 		a.metrics.SetDnsLogEnabled(0)
 	}
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.receiveCommand(cmdChan)
+	}()
+
 	a.logger.Info("DNS to Route Resolver started successfully")
 
 	select {
@@ -108,7 +115,7 @@ func (a *App) Run(ctx context.Context) error {
 	// cancel application context
 	a.cancel()
 
-	a.networkManager.Flush()
+	a.networkManager.StoreNetworks()
 
 	wg.Wait()
 
@@ -128,6 +135,24 @@ func (a *App) receiveLogs() {
 			a.logger.Debug("receiveLogs: got event")
 			a.handleDNSEntry(entry)
 
+		case <-a.ctx.Done():
+			return
+		}
+	}
+}
+
+// receiveCommand processes commands
+func (a *App) receiveCommand(cmdChan <-chan string) {
+	for {
+		select {
+		case cmd := <-cmdChan:
+			a.logger.Debugf("receiveCommand: got command - %s", cmd)
+			switch cmd {
+			case config.CommandNameCleanup:
+				a.networkManager.CleanupNetworks()
+			default:
+				a.logger.Errorf("receiveCommand: unknown command - %s", cmd)
+			}
 		case <-a.ctx.Done():
 			return
 		}

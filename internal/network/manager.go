@@ -59,14 +59,47 @@ func (m *NetworkManager) Init() error {
 	return nil
 }
 
-// Flush cleans up resources
-func (m *NetworkManager) Flush() {
+// StoreNetworks store all networks to state file
+func (m *NetworkManager) StoreNetworks() {
+	// Clean up BIRD configuration if needed
+	if m.cfg.Persistence.StateFile != "" {
+		if err := m.saveKnownNetworks(); err != nil {
+			m.logger.Error("Failed to save known networks: " + err.Error())
+		}
+	}
+}
+
+// CleanupNetworks cleans all networks
+func (m *NetworkManager) CleanupNetworks() {
+	m.memoryMutex.Lock()
+
+	// Find which group contains this network
+	var groups []string
+	for group := range m.knownNets {
+		groups = append(groups, group)
+	}
+
+	for _, group := range groups {
+		delete(m.knownNets, group)
+		m.logger.Infof("CleanupNetworks: remove group %s", group)
+	}
+	m.metrics.SetRoutesTotal(0)
+	m.memoryMutex.Unlock()
 
 	// Clean up BIRD configuration if needed
 	if m.cfg.Persistence.StateFile != "" {
 		if err := m.saveKnownNetworks(); err != nil {
 			m.logger.Error("Failed to save known networks: " + err.Error())
 		}
+	}
+
+	// save routes in bird
+	var emptyList []string
+	for _, group := range groups {
+		if err := m.SaveGroupRoutes(group, emptyList); err != nil {
+			m.logger.Errorf("failed to save routes for group %s: %v", group, err)
+		}
+		m.logger.Debugf("CleanupNetworks: save empty group %s", group)
 	}
 }
 
