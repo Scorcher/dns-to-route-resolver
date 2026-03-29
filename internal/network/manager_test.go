@@ -1,6 +1,7 @@
 package network
 
 import (
+	"fmt"
 	"github.com/Scorcher/dns-to-route-resolver/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	"net"
@@ -30,7 +31,7 @@ func TestNewManager(t *testing.T) {
 func TestNetworkManager_AddNetwork(t *testing.T) {
 	tests := []struct {
 		name          string
-		ip            net.IP
+		net           string
 		group         string
 		expectStatus  bool
 		expectCount   int
@@ -38,7 +39,7 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 	}{
 		{
 			name:          "add new network",
-			ip:            net.ParseIP("192.168.1.100"),
+			net:           "192.168.1.100/24",
 			group:         "group1",
 			expectStatus:  true,
 			expectCount:   1,
@@ -46,7 +47,7 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 		},
 		{
 			name:          "add duplicate network",
-			ip:            net.ParseIP("192.168.1.100"),
+			net:           "192.168.1.100/24",
 			group:         "group1",
 			expectStatus:  false,
 			expectCount:   1,
@@ -54,7 +55,7 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 		},
 		{
 			name:          "add network to different group",
-			ip:            net.ParseIP("10.0.0.1"),
+			net:           "10.0.1.100/24",
 			group:         "group2",
 			expectStatus:  true,
 			expectCount:   2,
@@ -73,21 +74,17 @@ func TestNetworkManager_AddNetwork(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			status = mgr.AddNetwork(tt.ip, tt.group)
-			if !tt.expectStatus {
-				assert.False(t, status)
-			} else {
-				assert.True(t, status)
-				assert.Equal(t, tt.expectCount, mgr.GetCount())
-
+			status = mgr.AddNetwork(tt.net, tt.group)
+			assert.Equal(t, tt.expectStatus, status)
+			assert.Equal(t, tt.expectCount, mgr.GetCount())
+			if tt.expectStatus {
 				if tt.expectInGroup {
 					mgr.stateMutex.RLock()
 					groupMap, exists := mgr.knownNets[tt.group]
 					mgr.stateMutex.RUnlock()
 
 					assert.True(t, exists)
-					expectedNetwork := ipToNetwork(tt.ip, 24).String()
-					_, networkExists := groupMap[expectedNetwork]
+					_, networkExists := groupMap[tt.net]
 					assert.True(t, networkExists)
 				}
 			}
@@ -105,14 +102,13 @@ func TestNetworkManager_RemoveNetwork(t *testing.T) {
 	var status bool
 
 	// Add a network first
-	ip := net.ParseIP("192.168.1.100")
+	network := "192.168.1.100/24"
 	group := "test-group"
-	status = mgr.AddNetwork(ip, group)
+	status = mgr.AddNetwork(network, group)
 	assert.True(t, status)
 	assert.Equal(t, 1, mgr.GetCount())
 
 	// Remove the network
-	network := ipToNetwork(ip, 24)
 	status = mgr.RemoveNetwork(network)
 	assert.True(t, status)
 	assert.Equal(t, 0, mgr.GetCount())
@@ -138,9 +134,9 @@ func TestNetworkManager_GetCount(t *testing.T) {
 	assert.Equal(t, 0, mgr.GetCount())
 
 	// Add networks
-	_ = mgr.AddNetwork(net.ParseIP("192.168.1.1"), "group1")
-	_ = mgr.AddNetwork(net.ParseIP("192.168.2.1"), "group1")
-	_ = mgr.AddNetwork(net.ParseIP("10.0.0.1"), "group2")
+	_ = mgr.AddNetwork("192.168.1.1/24", "group1")
+	_ = mgr.AddNetwork("192.168.2.1/24", "group1")
+	_ = mgr.AddNetwork("10.0.0.1/24", "group2")
 
 	assert.Equal(t, 3, mgr.GetCount())
 }
@@ -162,8 +158,8 @@ func TestNetworkManager_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < operationsPerGoroutine; j++ {
-				ip := net.IPv4(byte(id), byte(j%256), byte(j/256), 1)
-				_ = mgr.AddNetwork(ip, "group1")
+				ip := net.IPv4(byte(id), byte(j%256), byte(j/256), 0)
+				_ = mgr.AddNetwork(fmt.Sprintf("%s/24", ip.String()), "group1")
 			}
 		}(i)
 	}
@@ -194,9 +190,9 @@ func TestNetworkManager_Persistence(t *testing.T) {
 	// Create manager and add some networks
 	mgr1 := NewManager(cfg, metricsCollector)
 
-	_ = mgr1.AddNetwork(net.ParseIP("192.168.1.1"), "group1")
-	_ = mgr1.AddNetwork(net.ParseIP("192.168.2.1"), "group1")
-	_ = mgr1.AddNetwork(net.ParseIP("10.0.0.1"), "group2")
+	_ = mgr1.AddNetwork("192.168.1.0/24", "group1")
+	_ = mgr1.AddNetwork("192.168.2.0/24", "group1")
+	_ = mgr1.AddNetwork("10.0.0.0/24", "group2")
 
 	// Save state
 	err = mgr1.saveKnownNetworks()
@@ -228,39 +224,4 @@ func TestNetworkManager_Persistence(t *testing.T) {
 	assert.True(t, hasNet1)
 	assert.True(t, hasNet2)
 	assert.True(t, hasNet3)
-}
-
-func TestIpToNetwork(t *testing.T) {
-	tests := []struct {
-		name     string
-		ip       net.IP
-		maskLen  int
-		expected string
-	}{
-		{
-			name:     "IPv4 /24",
-			ip:       net.ParseIP("192.168.1.100"),
-			maskLen:  24,
-			expected: "192.168.1.0/24",
-		},
-		{
-			name:     "IPv4 /16",
-			ip:       net.ParseIP("192.168.1.100"),
-			maskLen:  16,
-			expected: "192.168.0.0/16",
-		},
-		{
-			name:     "IPv4 /32",
-			ip:       net.ParseIP("192.168.1.100"),
-			maskLen:  32,
-			expected: "192.168.1.100/32",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ipToNetwork(tt.ip, tt.maskLen)
-			assert.Equal(t, tt.expected, result.String())
-		})
-	}
 }
