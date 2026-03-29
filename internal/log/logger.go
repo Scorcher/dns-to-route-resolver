@@ -1,8 +1,10 @@
 package log
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -19,6 +21,14 @@ func NewLogger() *Logger {
 	output := zerolog.ConsoleWriter{
 		Out:        os.Stderr,
 		TimeFormat: time.RFC3339,
+		FormatCaller: func(i interface{}) string {
+			s := fmt.Sprintf("%s", i)
+			// Обрезаем префикс модуля, оставляя путь внутри репозитория
+			if idx := strings.Index(s, "dns-to-route-resolver/"); idx != -1 {
+				return s[idx+len("dns-to-route-resolver/"):]
+			}
+			return s
+		},
 	}
 
 	// Create logger with caller information
