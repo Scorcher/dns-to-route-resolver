@@ -21,10 +21,11 @@ import (
 
 // LogEntry represents a parsed DNS log entry
 type LogEntry struct {
-	ClientIP  net.IP
-	Domain    string
-	QueryType string
-	Group     string
+	ClientIP   net.IP
+	Domain     string
+	DomainRule string
+	QueryType  string
+	Group      string
 }
 
 const (
@@ -248,6 +249,7 @@ func (p *Processor) processLogsWithRetry(rotateChan chan bool) (bool, error) {
 			wg.Wait()
 			return false, fmt.Errorf("error reading log file: %v", err)
 		case line := <-lines:
+			p.metrics.IncLinesRead()
 			p.logger.Debugf("processLogsWithRetry: got log line \"%s\"", line)
 			entry, err := p.parseLogLine(line)
 			if err != nil {
@@ -440,29 +442,30 @@ func (p *Processor) parseLogLine(line string) (*LogEntry, error) {
 	}
 
 	// Get group for domain
-	group := p.getDomainGroup(domain)
+	group, domainRule := p.getDomainGroup(domain)
 
 	return &LogEntry{
-		ClientIP:  clientIP,
-		Domain:    domain,
-		QueryType: queryType,
-		Group:     group,
+		ClientIP:   clientIP,
+		Domain:     domain,
+		DomainRule: domainRule,
+		QueryType:  queryType,
+		Group:      group,
 	}, nil
 }
 
 // getDomainGroup returns the group name for a monitored domain, or empty string if not monitored
-func (p *Processor) getDomainGroup(domain string) string {
+func (p *Processor) getDomainGroup(domain string) (string, string) {
 	// Check exact match first
 	if group, ok := p.domains[strings.ToLower(domain)]; ok {
-		return group
+		return group, domain
 	}
 
 	// Check subdomains
 	for d, group := range p.domains {
 		if strings.HasSuffix("."+domain, "."+d) {
-			return group
+			return group, d
 		}
 	}
 
-	return ""
+	return "", ""
 }

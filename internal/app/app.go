@@ -161,7 +161,7 @@ func (a *App) receiveCommand(cmdChan <-chan string) {
 
 // handleDNSEntry handles a single DNS log entry
 func (a *App) handleDNSEntry(entry logprocessor.LogEntry) {
-	a.metrics.IncDNSQueries(entry.Domain)
+	a.metrics.IncDNSQueries(entry.DomainRule)
 	a.logger.Debugf("handleDNSEntry: entry - %s", entry.ClientIP.String())
 
 	// Skip localhost and non-A records
@@ -173,10 +173,12 @@ func (a *App) handleDNSEntry(entry logprocessor.LogEntry) {
 	listIp, err := resolveToIPv4(entry.Domain)
 	if err != nil {
 		a.logger.Warnf("handleDNSEntry: failed to resolve domain \"%s\" to IPv4: %v", entry.Domain, err)
+		a.metrics.IncDNSErrors("fail_resolve")
 		return
 	}
 	if len(listIp) == 0 {
 		a.logger.Warnf("handleDNSEntry: IPv4 addresses not found in domain \"%s\"", entry.Domain)
+		a.metrics.IncDNSErrors("no_ipv4")
 		return
 	}
 

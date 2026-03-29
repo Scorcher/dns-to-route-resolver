@@ -16,6 +16,7 @@ import (
 
 // Collector collects metrics for the application
 type Collector struct {
+	linesRead        *prometheus.CounterVec
 	routesAdded      *prometheus.CounterVec
 	routesRemoved    *prometheus.CounterVec
 	routesTotal      prometheus.Gauge
@@ -37,6 +38,15 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 	}
 
 	// Create metrics
+	linesRead := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_to_route_read_lines_total",
+			Help: "Total number of lines read from log",
+		},
+		[]string{},
+	)
+	linesRead.WithLabelValues().Add(0)
+
 	routesAdded := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "dns_to_route_routes_added_total",
@@ -44,6 +54,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 		},
 		[]string{},
 	)
+	routesAdded.WithLabelValues().Add(0)
 
 	routesRemoved := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -52,6 +63,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 		},
 		[]string{},
 	)
+	routesRemoved.WithLabelValues().Add(0)
 
 	routesTotal := prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -112,6 +124,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 
 	// Register metrics
 	registry.MustRegister(
+		linesRead,
 		routesAdded,
 		routesRemoved,
 		routesTotal,
@@ -124,6 +137,7 @@ func NewCollector(cfg *config.Config, registry prometheus.Registerer) *Collector
 	)
 
 	return &Collector{
+		linesRead:        linesRead,
 		routesAdded:      routesAdded,
 		routesRemoved:    routesRemoved,
 		routesTotal:      routesTotal,
@@ -202,6 +216,11 @@ func (c *Collector) Run(ctx context.Context, cmdChan chan string) error {
 // IncRoutesAdded increments the routes added counter
 func (c *Collector) IncRoutesAdded() {
 	c.routesAdded.WithLabelValues().Inc()
+}
+
+// IncLinesRead increments lines read counter
+func (c *Collector) IncLinesRead() {
+	c.linesRead.WithLabelValues().Inc()
 }
 
 // IncRoutesRemoved increments the routes removed counter

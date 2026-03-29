@@ -144,6 +144,7 @@ func TestProcessor_GetDomainGroup(t *testing.T) {
 		},
 	}
 
+	var group string
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
@@ -154,7 +155,8 @@ func TestProcessor_GetDomainGroup(t *testing.T) {
 
 			p := NewProcessor(cfg, metrics.NewCollector(cfg, prometheus.NewRegistry()))
 
-			assert.Equal(t, tt.expected, p.getDomainGroup(tt.domain))
+			group, _ = p.getDomainGroup(tt.domain)
+			assert.Equal(t, tt.expected, group)
 		})
 	}
 }

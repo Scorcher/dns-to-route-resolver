@@ -129,6 +129,7 @@ docker run -v $(pwd)/config.yaml:/config.yaml dns-to-route-resolver /config.yaml
 
 The service exposes Prometheus metrics at `http://localhost:9091/metrics` when enabled (see configuration file):
 
+* dns_to_route_read_lines_total (counter): Total number of lines read from log
 * dns_to_route_routes_added_total (counter): Total number of routes added to the routing table
 * dns_to_route_routes_removed_total (counter): Total number of routes removed from the routing table
 * dns_to_route_routes_total (gauge): Current number of routes in the routing table
